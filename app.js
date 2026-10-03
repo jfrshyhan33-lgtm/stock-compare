@@ -87,10 +87,13 @@
   async function parseSheet(xml, shared) {
     const rows = [];
     const rowRe = /<row\b[^>]*?(?:\/>|>([\s\S]*?)<\/row>)/g;
-    let m, n = 0;
+    let m, n = 0, seqRow = 0;
     while ((m = rowRe.exec(xml)) !== null) {
       const inner = m[1];
-      if (inner) {
+      const rp = /^<row\b[^>]*?\sr="(\d+)"/.exec(m[0]);
+      const rowPos = rp ? parseInt(rp[1], 10) - 1 : seqRow;
+      seqRow = rowPos + 1;
+      if (inner && rowPos >= 0 && rowPos < 1048576) {
         const arr = [];
         let any = false, seq = 0, c;
         const cellRe = /<c\b([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g;
@@ -120,11 +123,22 @@
           arr[ci] = val;
           any = true;
         }
-        if (any) rows.push(arr);
+        if (any) rows[rowPos] = arr;
       }
       if (++n % 4000 === 0) await tick();
     }
     return rows;
+  }
+
+  function parseMerges(xml) {
+    const out = [];
+    const re = /<mergeCell\b[^>]*?\sref="([A-Z]+)(\d+):([A-Z]+)(\d+)"/g;
+    let m;
+    while ((m = re.exec(xml)) !== null && out.length < 200000) {
+      const c1 = colIndex(m[1]), r1 = parseInt(m[2], 10) - 1, c2 = colIndex(m[3]), r2 = parseInt(m[4], 10) - 1;
+      if (r1 >= 0 && r2 >= r1 && c2 >= c1 && (r2 > r1 || c2 > c1)) out.push({ r1, c1, r2, c2 });
+    }
+    return out;
   }
 
   async function openXlsx(buf) {
@@ -159,7 +173,8 @@
         if (shared === null) shared = await loadShared(zip);
         const xml = await zipText(zip, sheets[i].path);
         if (xml == null) throw new AppError('تعذّر قراءة الورقة المحددة.');
-        return parseSheet(xml, shared);
+        const rows = await parseSheet(xml, shared);
+        return { rows, merges: parseMerges(xml) };
       }
     };
   }
@@ -199,7 +214,7 @@
       else if (ch !== '\r') cell += ch;
     }
     if (cell !== '' || row.length) endRow();
-    return { names: ['CSV'], getRows: async () => rows };
+    return { names: ['CSV'], getRows: async () => ({ rows, merges: [] }) };
   }
 
   async function openWorkbook(file) {
@@ -256,7 +271,7 @@
   const PAGE = 200;
 
   function newStore(def) {
-    return { def, fileName: '', wb: null, sheetIdx: 0, rows: null, headerRow: 0, cols: [], nameCol: '', qtyCol: '', items: null, skipped: 0 };
+    return { def, fileName: '', wb: null, sheetIdx: 0, rows: null, headerRow: 0, cols: [], nameCol: '', qtyCol: '', items: null, skipped: 0, file: null, merges: [], edited: false };
   }
   const state = {
     gh: newStore(STORE_DEFS[0]),
@@ -274,6 +289,7 @@
                accept=".xlsx,.xlsm,.xls,.csv,.tsv,.txt,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv">
         <label class="btn primary big" for="${d.key}-file">📁 استيراد مخزن ${d.name}</label>
         <p class="status" id="${d.key}-status">لم يتم اختيار ملف بعد.</p>
+        <button type="button" class="btn" id="${d.key}-edit" hidden>✏️ عرض وتعديل الملف (حذف وتحديد ودمج)</button>
         <div class="cols" id="${d.key}-cols" hidden>
           <label class="field" id="${d.key}-sheetWrap" hidden><span>الورقة (Sheet)</span><select id="${d.key}-sheet"></select></label>
           <label class="field"><span>عمود اسم المادة</span><select id="${d.key}-name"></select></label>
@@ -289,6 +305,7 @@
         e.target.value = '';           // للسماح باختيار نفس الملف مرة أخرى
         if (f) loadFile(k, f);
       });
+      $('#' + k + '-edit').addEventListener('click', () => { if (window.openEditor) window.openEditor(k); });
       $('#' + k + '-sheet').addEventListener('change', e => changeSheet(k, parseInt(e.target.value, 10)));
       $('#' + k + '-name').addEventListener('change', e => { state[k].nameCol = e.target.value; recompute(k); });
       $('#' + k + '-qty').addEventListener('change', e => { state[k].qtyCol = e.target.value; recompute(k); });
@@ -300,7 +317,7 @@
     el.className = 'status' + (cls ? ' ' + cls : '');
     el.innerHTML = html;
   }
-  function hideCols(key) { $('#' + key + '-cols').hidden = true; }
+  function hideCols(key) { $('#' + key + '-cols').hidden = true; $('#' + key + '-edit').hidden = true; }
 
   function errText(err) {
     return err instanceof AppError ? err.message : 'تعذّرت قراءة الملف. تأكد أنه ملف Excel صالح بصيغة xlsx.';
@@ -308,7 +325,7 @@
 
   async function loadFile(key, file) {
     const st = state[key];
-    Object.assign(st, { fileName: file.name, wb: null, rows: null, items: null, nameCol: '', qtyCol: '', skipped: 0 });
+    Object.assign(st, { fileName: file.name, file, merges: [], edited: false, wb: null, rows: null, items: null, nameCol: '', qtyCol: '', skipped: 0 });
     hideCols(key);
     setStatus(key, 'جارٍ قراءة الملف…', 'busy');
     await tick();
@@ -338,7 +355,10 @@
 
   async function selectSheet(key, idx) {
     const st = state[key];
-    const rows = await st.wb.getRows(idx);
+    const res = await st.wb.getRows(idx);
+    const rows = res.rows;
+    st.merges = res.merges || [];
+    st.edited = false;
     st.sheetIdx = idx;
     if (!rows.length) { st.rows = null; throw new AppError('الورقة المحددة فارغة. اختر ورقة أخرى.'); }
     st.rows = rows;
@@ -348,13 +368,8 @@
 
   const countFilled = row => (row ? row.filter(v => v !== undefined && v !== '').length : 0);
 
-  function setupColumns(key) {
-    const st = state[key], rows = st.rows;
-
-    let h = 0;
-    for (let r = 0; r < Math.min(rows.length, 30); r++) if (countFilled(rows[r]) >= 2) { h = r; break; }
-    st.headerRow = h;
-
+  function computeCols(st) {
+    const rows = st.rows;
     const upto = Math.min(rows.length, 200);
     let nc = 0;
     for (let r = 0; r < upto; r++) nc = Math.max(nc, (rows[r] || []).length);
@@ -364,12 +379,27 @@
       for (let r = 0; r < upto && !used; r++) { const v = rows[r] && rows[r][i]; if (v !== undefined && v !== '') used = true; }
       if (used) st.cols.push(i);
     }
+  }
+
+  function setupColumns(key) {
+    const st = state[key], rows = st.rows;
+
+    let h = 0;
+    for (let r = 0; r < Math.min(rows.length, 30); r++) if (countFilled(rows[r]) >= 2) { h = r; break; }
+    st.headerRow = h;
+
+    computeCols(st);
 
     const g = guessColumns(st);
     st.nameCol = g.name >= 0 ? String(g.name) : '';
     st.qtyCol = g.qty >= 0 ? String(g.qty) : '';
 
-    const header = rows[h] || [];
+    renderColumnSelects(key);
+  }
+
+  function renderColumnSelects(key) {
+    const st = state[key], rows = st.rows;
+    const header = rows[st.headerRow] || [];
     const label = i => {
       const t = header[i] === undefined ? 'بدون عنوان' : cleanDisplay(header[i]);
       return colLetter(i) + ' — ' + (t.length > 32 ? t.slice(0, 32) + '…' : t);
@@ -387,11 +417,12 @@
     sheetSel.value = String(st.sheetIdx);
 
     $('#' + key + '-cols').hidden = false;
+    $('#' + key + '-edit').hidden = false;
   }
 
   function guessColumns(st) {
     const h = st.rows[st.headerRow] || [];
-    const sample = st.rows.slice(st.headerRow + 1, st.headerRow + 201);
+    const sample = st.rows.slice(st.headerRow + 1, st.headerRow + 201).filter(Boolean);
     const hdr = i => String(h[i] === undefined ? '' : h[i]).toLowerCase();
 
     let name = -1, best = 0;
@@ -469,6 +500,7 @@
     }
     let html = `✓ تم تحميل ملف ${d.name}<span class="file">${esc(st.fileName)} — ${st.items.size} مادة</span>`;
     if (st.skipped) html += `<span class="file">تم تجاهل ${st.skipped} صف لأن الكمية فيه ليست رقمًا.</span>`;
+    if (st.edited) html += '<span class="file">✎ تم تعديل الملف داخل التطبيق (ملفك الأصلي لم يتغير)</span>';
     setStatus(key, html, 'ok');
 
     const first = st.items.values().next().value;
@@ -686,9 +718,30 @@
     document.addEventListener('keydown', e => { if (e.key === 'Escape' && !$('#reportView').hidden) closePreview(); });
 
     if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol)) {
+      const hadController = !!navigator.serviceWorker.controller;
+      let reloaded = false;
+      navigator.serviceWorker.addEventListener('controllerchange', () => {
+        // نسخة جديدة: نعيد التحميل مرة واحدة فقط إذا لم يستورد المستخدم شيئًا بعد
+        if (!hadController || reloaded || state.gh.rows || state.hr.rows) return;
+        reloaded = true; location.reload();
+      });
       navigator.serviceWorker.register('sw.js').catch(() => { /* يعمل التطبيق حتى بدون تسجيل */ });
     }
   }
+
+  function afterEdit(key) {
+    const st = state[key];
+    if (!st.rows) return;
+    computeCols(st);
+    renderColumnSelects(key);
+    recompute(key);
+  }
+  async function reloadOriginal(key) {
+    const st = state[key];
+    if (!st.file) throw new AppError('الملف الأصلي غير متاح. اختره من جديد.');
+    await loadFile(key, st.file);
+  }
+  window.__stockApp = { state, $, esc, fmt, colLetter, tick, afterEdit, reloadOriginal };
 
   init();
 })();
