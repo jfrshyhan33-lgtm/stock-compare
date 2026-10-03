@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>مقارنة المخزون</title>
+  <meta name="theme-color" content="#0f766e">
+  <meta name="description" content="مقارنة كميات المواد بين مخزنين باستخدام ملفات Excel — يعمل بدون إنترنت">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" type="image/png" href="icon-192.png">
+  <link rel="apple-touch-icon" href="apple-touch-icon.png">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="مقارنة المخزون">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <header class="top">
+    <h1>مقارنة المخزون</h1>
+    <p>Excel ← مقارنة ← معاينة ← PDF · كل شيء يتم على جهازك بدون إنترنت</p>
+  </header>
+
+  <main class="wrap">
+
+    <!-- بطاقتا المخزنين تُبنيان من app.js -->
+    <div id="stores" class="stores"></div>
+
+    <section class="card" id="settings">
+      <h2>إعداد المقارنة</h2>
+
+      <label class="field" for="threshold">
+        <span>الحد الأقصى للكمية القليلة</span>
+        <input id="threshold" type="number" inputmode="decimal" min="0" step="any" value="5">
+        <small>من 0 حتى هذا الرقم = كمية قليلة. أكثر منه = ليست قليلة.</small>
+      </label>
+
+      <fieldset class="opts">
+        <legend>اختر النتائج المطلوبة</legend>
+        <label class="check"><input type="checkbox" id="opt-A" checked><span>معرض الغدير قليل ← الحرفيين متوفر</span></label>
+        <label class="check"><input type="checkbox" id="opt-B" checked><span>الحرفيين قليل ← معرض الغدير متوفر</span></label>
+        <label class="check"><input type="checkbox" id="opt-C" checked><span>غير متوفر في المخزنين</span></label>
+      </fieldset>
+
+      <div id="msg" class="msg" role="alert" hidden></div>
+
+      <button id="compareBtn" class="btn primary big" type="button">🔍 إجراء المقارنة</button>
+    </section>
+
+    <section id="results" class="card" hidden>
+      <h2>النتائج</h2>
+      <div id="cards" class="cats"></div>
+      <div id="tableArea"></div>
+
+      <div class="actions">
+        <button id="previewBtn" class="btn big" type="button">📄 معاينة التقرير</button>
+        <button id="pdfBtn" class="btn primary big" type="button">⬇ تصدير PDF</button>
+      </div>
+      <p class="hint">عند التصدير تظهر نافذة الطباعة: اختر «حفظ كـ PDF» (حجم الورق A4).</p>
+    </section>
+
+  </main>
+
+  <!-- معاينة التقرير (وهي نفسها ما يُطبع إلى PDF) -->
+  <div id="reportView" hidden>
+    <div class="report-toolbar">
+      <button id="rvBack" class="btn" type="button">→ رجوع</button>
+      <button id="rvPrint" class="btn primary" type="button">⬇ تصدير PDF</button>
+    </div>
+    <article id="report" class="report"></article>
+  </div>
+
+  <script src="jszip.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
