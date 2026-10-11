@@ -15,6 +15,7 @@
   let undoStack = [], redoStack = [];
   let nrows = 1, ncols = 1, colW = [], colX = [], totalW = 0;
   let lastF = -1, lastL = -2, ticking = false;
+  let matches = [], curIdx = -1, curRow = -1, qToken = 0, qTimer = null, scope = 'all', searchSel = false;
 
   /* ---------- أدوات ---------- */
   const rangeArr = (a, b) => { const o = []; for (let i = a; i <= b; i++) o.push(i); return o; };
@@ -58,6 +59,12 @@
         <input id="ed-inp" type="text" disabled placeholder="اختر خلية لتعديل محتواها" autocomplete="off">
         <button class="btn" id="ed-ok" type="button">✓</button>
       </div>
+      <div class="ed-search">
+        <input id="ed-q" type="search" placeholder="🔍 ابحث عن مادة (مثلاً: كاوه)" autocomplete="off" enterkeyhint="search">
+        <span class="ed-qc" id="ed-qc"></span>
+        <button class="btn" id="ed-prev" type="button" aria-label="النتيجة السابقة">▲</button>
+        <button class="btn" id="ed-next" type="button" aria-label="النتيجة التالية">▼</button>
+      </div>
       <div class="ed-grid" id="ed-grid">
         <div class="ed-scene" id="ed-scene">
           <div class="ed-hdr" id="ed-hdr"></div>
@@ -72,6 +79,8 @@
         <button class="btn danger" data-act="delcols" type="button">🗑 حذف الأعمدة</button>
         <button class="btn danger" data-act="delrows" type="button">🗑 حذف الصفوف</button>
         <button class="btn" data-act="clear" type="button">🧹 مسح المحتوى</button>
+        <button class="btn" data-act="keeprows" type="button">✂ إبقاء المحدد وحذف الباقي</button>
+        <button class="btn" data-act="scope" type="button">البحث في: كل الأعمدة</button>
         <button class="btn" data-act="merge" type="button">⛓ دمج الخلايا</button>
         <button class="btn" data-act="unmerge" type="button">✂ فك الدمج</button>
         <button class="btn" data-act="insrow" type="button">➕ إدراج صف</button>
@@ -87,7 +96,8 @@
     el = {
       title: q('#ed-title'), done: q('#ed-done'), addr: q('#ed-addr'), inp: q('#ed-inp'), ok: q('#ed-ok'),
       grid: q('#ed-grid'), scene: q('#ed-scene'), hdr: q('#ed-hdr'), nums: q('#ed-nums'), cells: q('#ed-cells'),
-      status: q('#ed-status'), tools: q('#ed-tools')
+      status: q('#ed-status'), tools: q('#ed-tools'),
+      q: q('#ed-q'), qc: q('#ed-qc'), prev: q('#ed-prev'), next: q('#ed-next')
     };
 
     el.done.addEventListener('click', () => closeEditor());
@@ -104,6 +114,10 @@
     el.inp.addEventListener('change', applyInput);
     el.inp.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); el.inp.blur(); } });
     el.ok.addEventListener('click', () => { applyInput(); el.inp.blur(); });
+    el.q.addEventListener('input', () => { clearTimeout(qTimer); qTimer = setTimeout(runSearch, 250); });
+    el.q.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); stepMatch(1); } });
+    el.prev.addEventListener('click', () => stepMatch(-1));
+    el.next.addEventListener('click', () => stepMatch(1));
     window.addEventListener('resize', () => renderWindow(true));
     window.addEventListener('popstate', () => { if (root && !root.hidden) { pushed = false; closeEditor(true); } });
     document.addEventListener('keydown', e => {
@@ -123,6 +137,7 @@
     key = k; st = s;
     if (!root) build();
     undoStack = []; redoStack = []; sel = null; rangeMode = false; msg = '';
+    resetSearch();
     el.title.textContent = st.def.name + ' — ' + st.fileName;
     root.hidden = false;
     document.body.classList.add('noscroll');
@@ -231,20 +246,20 @@
     const roleCls = (r, c) => (c === rc.n ? ' cn' : '') + (c === rc.q ? ' cq' : '') + (r === hr ? ' hr' : '');
     const out = [], nums = [];
     for (let r = f; r <= l; r++) {
-      nums.push(`<div class="ed-n${rowSel(r) ? ' sel' : ''}${r === hr ? ' hr' : ''}" data-rn="${r}" style="top:${r * ROW_H}px;height:${ROW_H}px">${r + 1}</div>`);
+      nums.push(`<div class="ed-n${rowSel(r) ? ' sel' : ''}${r === hr ? ' hr' : ''}${r === curRow ? ' cur' : ''}" data-rn="${r}" style="top:${r * ROW_H}px;height:${ROW_H}px">${r + 1}</div>`);
       const row = st.rows[r];
       for (let c = 0; c < ncols; c++) {
         const k = r * K + c;
         if (covered.has(k) || tl.has(k)) continue;
         const v = row ? row[c] : undefined;
         const act = sel && sel.type === 'cells' && sel.ar === r && sel.ac === c;
-        out.push(`<div class="ed-c${roleCls(r, c)}${areaSel(r, c, r, c) ? ' sel' : ''}${act ? ' act' : ''}" data-r="${r}" data-c="${c}" style="top:${r * ROW_H}px;right:${colX[c]}px;width:${colW[c]}px;height:${ROW_H}px"><span dir="auto">${esc(disp(v))}</span></div>`);
+        out.push(`<div class="ed-c${roleCls(r, c)}${areaSel(r, c, r, c) ? ' sel' : ''}${act ? ' act' : ''}${r === curRow ? ' cur' : ''}" data-r="${r}" data-c="${c}" style="top:${r * ROW_H}px;right:${colX[c]}px;width:${colW[c]}px;height:${ROW_H}px"><span dir="auto">${esc(disp(v))}</span></div>`);
       }
     }
     for (const m of inWin) {
       let w = 0; for (let c = m.c1; c <= m.c2; c++) w += colW[c];
       const act = sel && sel.type === 'cells' && sel.ar === m.r1 && sel.ac === m.c1;
-      out.push(`<div class="ed-c mg${roleCls(m.r1, m.c1)}${areaSel(m.r1, m.c1, m.r2, m.c2) ? ' sel' : ''}${act ? ' act' : ''}" data-r="${m.r1}" data-c="${m.c1}" style="top:${m.r1 * ROW_H}px;right:${colX[m.c1]}px;width:${w}px;height:${(m.r2 - m.r1 + 1) * ROW_H}px"><span dir="auto">${esc(disp(getCell(m.r1, m.c1)))}</span></div>`);
+      out.push(`<div class="ed-c mg${roleCls(m.r1, m.c1)}${areaSel(m.r1, m.c1, m.r2, m.c2) ? ' sel' : ''}${act ? ' act' : ''}${curRow >= m.r1 && curRow <= m.r2 ? ' cur' : ''}" data-r="${m.r1}" data-c="${m.c1}" style="top:${m.r1 * ROW_H}px;right:${colX[m.c1]}px;width:${w}px;height:${(m.r2 - m.r1 + 1) * ROW_H}px"><span dir="auto">${esc(disp(getCell(m.r1, m.c1)))}</span></div>`);
     }
     el.cells.innerHTML = out.join('');
     el.nums.innerHTML = nums.join('');
@@ -254,6 +269,7 @@
   function onGridClick(e) {
     const t = e.target.closest('[data-r],[data-rn],[data-cn],[data-corner]');
     if (!t) return;
+    searchSel = false;
     applyInput();
     if (t.dataset.corner) {
       sel = { type: 'cells', ar: 0, ac: 0, r1: 0, c1: 0, r2: nrows - 1, c2: ncols - 1 };
@@ -357,6 +373,9 @@
     set('asname', cols.length === 1, cols.length === 1 && st.nameCol === String(cols[0]) ? '🏷 إلغاء عمود الاسم' : '🏷 هذا عمود الاسم');
     set('asqty', cols.length === 1, cols.length === 1 && st.qtyCol === String(cols[0]) ? '🔢 إلغاء عمود الكمية' : '🔢 هذا عمود الكمية');
     set('ashead', rows.length === 1, rows.length === 1 && st.headerRow === rows[0] ? '📌 إلغاء صف العناوين' : '📌 هذا صف العناوين');
+    set('keeprows', !!(sel && sel.type === 'rows' && sel.rows.size > 0));
+    set('scope', st.nameCol !== '', 'البحث في: ' + (scope === 'name' && st.nameCol !== '' ? 'عمود الاسم فقط' : 'كل الأعمدة'));
+    updateSearchUI();
   }
 
   /* ---------- التعديل والتراجع ---------- */
@@ -370,6 +389,7 @@
   const maxUndo = () => (st.rows.length > 50000 ? 3 : 15);
   function pushUndo() { undoStack.push(snapshot()); if (undoStack.length > maxUndo()) undoStack.shift(); }
   function restore(s) {
+    resetSearch();
     st.rows = s.rows; st.merges = s.merges; st.headerRow = s.headerRow; st.nameCol = s.nameCol; st.qtyCol = s.qtyCol;
     sel = null;
     afterStructure();
@@ -380,7 +400,7 @@
   function edit(fn, note, dirty) {
     pushUndo();
     fn();
-    if (dirty !== false) st.edited = true;
+    if (dirty !== false) { st.edited = true; resetSearch(); }
     redoStack = [];
     msg = note || '';
     afterStructure();
@@ -492,6 +512,19 @@
       case 'unmerge':
         edit(() => { st.merges = st.merges.filter(m => !areaSel(m.r1, m.c1, m.r2, m.c2)); }, 'تم فك الدمج');
         return;
+      case 'keeprows': {
+        if (!sel || sel.type !== 'rows') return;
+        const keep = new Set(sel.rows), del = [];
+        for (let r = 0; r < st.rows.length; r++) if (r > st.headerRow && !keep.has(r)) del.push(r);
+        if (!del.length) { msg = 'كل الصفوف محددة أصلًا'; updateUI(); return; }
+        edit(() => { removeRows(del); sel = null; }, 'تم إبقاء ' + keep.size + ' صف وحذف ' + del.length + ' — يمكنك التراجع');
+        return;
+      }
+      case 'scope':
+        scope = scope === 'all' ? 'name' : 'all';
+        updateUI();
+        if (el.q.value.trim()) runSearch();
+        return;
       case 'insrow': {
         if (!rows.length) return;
         const r = rows[0];
@@ -558,6 +591,88 @@
         return;
       }
     }
+  }
+
+  /* ---------- البحث ---------- */
+  const SMAP = { 'أ': 'ا', 'إ': 'ا', 'آ': 'ا', 'ٱ': 'ا', 'ة': 'ه', 'ى': 'ي', 'ئ': 'ي', 'ؤ': 'و' };
+  // تطبيع مرن للبحث فقط: يتجاهل التشكيل والهمزات والتاء المربوطة والأرقام العربية وحالة الأحرف
+  function sNorm(v) {
+    return String(v).replace(/[ً-ْٰـ]|[أإآٱةىئؤ]|[٠-٩]|[۰-۹]/g, m => {
+      const c = m.charCodeAt(0);
+      if (c >= 0x660 && c <= 0x669) return String(c - 0x660);
+      if (c >= 0x6F0 && c <= 0x6F9) return String(c - 0x6F0);
+      return SMAP[m] || '';
+    }).toLowerCase();
+  }
+
+  function resetSearch() {
+    clearTimeout(qTimer); qToken++;
+    matches = []; curIdx = -1; curRow = -1; searchSel = false;
+    if (el.q) el.q.value = '';
+  }
+
+  function updateSearchUI() {
+    if (!el.q) return;
+    const has = el.q.value.trim() !== '';
+    el.qc.textContent = matches.length ? (curIdx + 1) + ' / ' + matches.length : (has ? '0' : '');
+    el.prev.disabled = el.next.disabled = matches.length < 1;
+  }
+
+  function scrollToRow(r) { el.grid.scrollTop = Math.max(0, r * ROW_H); }
+
+  function stepMatch(d) {
+    if (!matches.length) return;
+    curIdx = (curIdx + d + matches.length) % matches.length;
+    curRow = matches[curIdx];
+    scrollToRow(curRow);
+    renderWindow(true);
+    updateSearchUI();
+  }
+
+  async function runSearch() {
+    if (!st || !root || root.hidden) return;
+    const token = ++qToken;
+    const q = el.q.value.trim();
+    if (!q) {
+      matches = []; curIdx = -1; curRow = -1;
+      if (searchSel && sel && sel.type === 'rows') sel = null;
+      searchSel = false; msg = '';
+      renderHeader(); renderWindow(true); updateUI();
+      return;
+    }
+    const words = sNorm(q).split(/\s+/).filter(Boolean);
+    const nameC = st.nameCol === '' ? -1 : parseInt(st.nameCol, 10);
+    const onlyName = scope === 'name' && nameC >= 0;
+    const found = [], rows = st.rows, n = Math.min(rows.length, MAX_ROWS);
+    for (let r = 0; r < n; r++) {
+      const row = rows[r];
+      if (row) {
+        let text = '';
+        if (onlyName) { const v = row[nameC]; if (v !== undefined && v !== null) text = sNorm(v); }
+        else for (let c = 0; c < row.length; c++) { const v = row[c]; if (v !== undefined && v !== null && v !== '') text += ' ' + sNorm(v); }
+        if (text) {
+          let ok = true;
+          for (const w of words) if (!text.includes(w)) { ok = false; break; }
+          if (ok) found.push(r);
+        }
+      }
+      if (r % 20000 === 19999) { await App().tick(); if (token !== qToken) return; }
+    }
+    if (token !== qToken) return;
+    matches = found;
+    if (!found.length) {
+      curIdx = -1; curRow = -1;
+      if (searchSel) sel = null;
+      searchSel = false;
+      msg = 'لا توجد نتائج لـ «' + q + '»' + (onlyName ? ' في عمود الاسم' : '');
+    } else {
+      sel = { type: 'rows', rows: new Set(found), anchor: found[0] };
+      searchSel = true;
+      curIdx = 0; curRow = found[0];
+      msg = 'وُجد ' + found.length + ' صف فيه «' + q + '» — تم تحديدها كلها';
+      scrollToRow(curRow);
+    }
+    renderHeader(); renderWindow(true); updateUI();
   }
 
   /* ---------- حفظ نسخة xlsx (محليًا بدون إنترنت) ---------- */

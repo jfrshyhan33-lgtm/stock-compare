@@ -199,3 +199,12 @@ input[type=number],select{
 .ed-tools .btn.danger{border-color:var(--err); color:var(--err)}
 .ed-tools .btn.on{background:var(--brand); color:#fff}
 .ed-tools .btn:disabled{opacity:.4}
+
+/* ---- البحث داخل المحرر ---- */
+.ed-search{display:flex; gap:6px; align-items:center; padding:6px 12px; background:#fff; border-bottom:1px solid var(--line)}
+.ed-search input{flex:1; min-width:0; min-height:42px; font:inherit; font-size:16px; border:1.5px solid var(--line); border-radius:8px; padding:4px 10px; background:#fff; color:var(--ink)}
+.ed-qc{min-width:46px; text-align:center; font-size:.85rem; color:var(--muted); direction:ltr}
+.ed-search .btn{width:42px; min-height:42px; padding:0; flex:none}
+.ed-search .btn:disabled{opacity:.4}
+.ed-c.cur{box-shadow:inset 0 2px 0 #f59e0b, inset 0 -2px 0 #f59e0b}
+.ed-n.cur{background:#f59e0b; color:#fff}
