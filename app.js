@@ -217,16 +217,22 @@
     return { names: ['CSV'], getRows: async () => ({ rows, merges: [] }) };
   }
 
-  async function openWorkbook(file) {
-    const buf = await file.arrayBuffer();
+  async function openFromBuf(buf, fname) {
     if (!buf.byteLength) throw new AppError('الملف فارغ.');
     const h = new Uint8Array(buf, 0, Math.min(8, buf.byteLength));
     if (h[0] === 0x50 && h[1] === 0x4B) return openXlsx(buf);               // ZIP => xlsx
     if (h[0] === 0xD0 && h[1] === 0xCF && h[2] === 0x11 && h[3] === 0xE0)  // OLE => xls قديم أو محمي
       throw new AppError('هذا الملف بصيغة xls القديمة أو محمي بكلمة مرور. افتحه في Excel واحفظه بصيغة xlsx (عادي) ثم استورده.');
-    const ext = (file.name.split('.').pop() || '').toLowerCase();
+    const ext = ((fname || '').split('.').pop() || '').toLowerCase();
     if (['csv', 'tsv', 'txt'].includes(ext)) return openCsv(buf);
     throw new AppError('الملف غير صالح. اختر ملف Excel بصيغة xlsx.');
+  }
+
+  async function openWorkbook(file) {
+    const buf = await file.arrayBuffer();
+    const wb = await openFromBuf(buf, file.name);
+    wb.buf = buf;
+    return wb;
   }
 
   /* ---------- 3) تنظيف الأسماء وقراءة الكميات ---------- */
@@ -271,8 +277,11 @@
   const PAGE = 200;
 
   function newStore(def) {
-    return { def, fileName: '', wb: null, sheetIdx: 0, rows: null, headerRow: 0, cols: [], nameCol: '', qtyCol: '', items: null, skipped: 0, file: null, merges: [], edited: false };
+    return { def, fileName: '', wb: null, sheetIdx: 0, rows: null, headerRow: 0, cols: [], nameCol: '', qtyCol: '', items: null, skipped: 0, file: null, srcBuf: null, merges: [], edited: false };
   }
+  const handlers = {};
+  const on = (e, f) => (handlers[e] || (handlers[e] = [])).push(f);
+  const emit = e => (handlers[e] || []).forEach(f => { try { f(); } catch (_) { /* لا نوقف التطبيق */ } });
   const state = {
     gh: newStore(STORE_DEFS[0]),
     hr: newStore(STORE_DEFS[1]),
@@ -331,6 +340,7 @@
     await tick();
     try {
       st.wb = await openWorkbook(file);
+      st.srcBuf = st.wb.buf;
       st.sheetIdx = 0;
       await selectSheet(key, 0);
     } catch (err) {
@@ -510,6 +520,7 @@
   }
 
   function afterStoreChange() {
+    emit('stores');
     if (!state.results) return;
     if (state.gh.items && state.hr.items) runCompare(true);
     else hideResults();
@@ -594,6 +605,7 @@
 
   function hideResults() {
     state.results = null;
+    emit('results');
     $('#results').hidden = true;
     $('#reportView').hidden = true;
     document.body.classList.remove('noscroll');
@@ -653,6 +665,13 @@
         <tr><th>المخزن الأول</th><td>معرض الغدير</td></tr>
         <tr><th>المخزن الثاني</th><td>الحرفيين</td></tr>
         <tr><th>الحد المحدد للكمية القليلة</th><td>${fmt(r.T)} (من 0 إلى ${fmt(r.T)} = كمية قليلة)</td></tr>`;
+    if (window.__review && window.__review.totals) {
+      const t = window.__review.totals();
+      if (t) {
+        h += `<tr><th>عدد مواد معرض الغدير</th><td>${t.gh}</td></tr><tr><th>عدد مواد الحرفيين</th><td>${t.hr}</td></tr>` +
+             `<tr><th>موجودة في الغدير وغير موجودة في الحرفيين</th><td>${t.onlyA}</td></tr><tr><th>موجودة في الحرفيين وغير موجودة في الغدير</th><td>${t.onlyB}</td></tr>`;
+      }
+    }
     for (const id of ['A', 'B', 'C']) {
       if (r.opts[id]) h += `<tr><th>${CATS[id].title}</th><td>${r[id].length} مادة</td></tr>`;
     }
@@ -664,23 +683,29 @@
     $('#report').innerHTML = h;
   }
 
+  let customReport = null;
   function openPreview() {
-    if (!state.results) { showMsg('يرجى إجراء المقارنة أولًا.'); return; }
-    buildReport();
+    if (customReport === null) {
+      if (!state.results) { showMsg('يرجى إجراء المقارنة أولًا.'); return; }
+      buildReport();
+    } else $('#report').innerHTML = customReport;
     $('#reportView').hidden = false;
     $('#reportView').scrollTop = 0;
     document.body.classList.add('noscroll');
   }
   function closePreview() {
+    customReport = null;
     $('#reportView').hidden = true;
     document.body.classList.remove('noscroll');
   }
 
   function exportPdf() {
-    if (!state.results) { showMsg('يرجى إجراء المقارنة أولًا.'); return; }
-    buildReport();
+    if (customReport === null) {
+      if (!state.results) { showMsg('يرجى إجراء المقارنة أولًا.'); return; }
+      buildReport();
+    } else $('#report').innerHTML = customReport;
     const old = document.title;
-    document.title = 'تقرير-مقارنة-المخزون-' + dateStr(state.results.date);
+    document.title = 'تقرير-مقارنة-المخزون-' + dateStr(customReport === null ? state.results.date : new Date());
     const restore = () => { document.title = old; window.removeEventListener('afterprint', restore); };
     window.addEventListener('afterprint', restore);
     setTimeout(() => window.print(), 60);
@@ -695,10 +720,10 @@
     let timer = null;
     $('#threshold').addEventListener('input', () => {
       clearTimeout(timer);
-      timer = setTimeout(() => { if (state.results) runCompare(true); }, 250);
+      timer = setTimeout(() => { if (state.results) runCompare(true); emit('settings'); }, 250);
     });
     for (const id of ['A', 'B', 'C']) {
-      $('#opt-' + id).addEventListener('change', () => { if (state.results) runCompare(true); });
+      $('#opt-' + id).addEventListener('change', () => { if (state.results) runCompare(true); emit('settings'); });
     }
 
     $('#cards').addEventListener('click', e => {
@@ -711,8 +736,8 @@
       if (e.target.id === 'moreBtn') { state.limit[state.active] += PAGE; renderResults(); }
     });
 
-    $('#previewBtn').addEventListener('click', openPreview);
-    $('#pdfBtn').addEventListener('click', exportPdf);
+    $('#previewBtn').addEventListener('click', () => { customReport = null; openPreview(); });
+    $('#pdfBtn').addEventListener('click', () => { customReport = null; exportPdf(); });
     $('#rvBack').addEventListener('click', closePreview);
     $('#rvPrint').addEventListener('click', exportPdf);
     document.addEventListener('keydown', e => { if (e.key === 'Escape' && !$('#reportView').hidden) closePreview(); });
@@ -738,10 +763,45 @@
   }
   async function reloadOriginal(key) {
     const st = state[key];
-    if (!st.file) throw new AppError('الملف الأصلي غير متاح. اختره من جديد.');
-    await loadFile(key, st.file);
+    if (!st.srcBuf) throw new AppError('الملف الأصلي غير متاح. اختره من جديد.');
+    await loadFile(key, new File([st.srcBuf], st.fileName));
   }
-  window.__stockApp = { state, $, esc, fmt, colLetter, tick, afterEdit, reloadOriginal };
+
+  function clearStore(key) {
+    const st = state[key];
+    Object.assign(st, { fileName: '', file: null, srcBuf: null, wb: null, sheetIdx: 0, rows: null, headerRow: 0, cols: [],
+      nameCol: '', qtyCol: '', items: null, skipped: 0, merges: [], edited: false });
+    setStatus(key, 'لم يتم اختيار ملف بعد.');
+    hideCols(key);
+  }
+  function resetAll() {
+    clearStore('gh'); clearStore('hr');
+    hideResults(); hideMsg();
+    emit('stores');
+  }
+  async function restoreStore(key, snap) {
+    const st = state[key];
+    clearStore(key);
+    const wb = await openFromBuf(snap.buf, snap.fileName);
+    wb.buf = snap.buf;
+    Object.assign(st, { fileName: snap.fileName, srcBuf: snap.buf, wb, sheetIdx: snap.sheetIdx || 0, rows: snap.rows,
+      merges: snap.merges || [], headerRow: snap.headerRow, nameCol: snap.nameCol, qtyCol: snap.qtyCol, edited: !!snap.edited });
+    computeCols(st);
+    renderColumnSelects(key);
+    recompute(key);
+  }
+  function getSettings() {
+    return { threshold: $('#threshold').value, A: optOn('A'), B: optOn('B'), C: optOn('C'), compared: !!state.results };
+  }
+  function setSettings(s) {
+    if (!s) return;
+    if (s.threshold !== undefined) $('#threshold').value = s.threshold;
+    for (const id of ['A', 'B', 'C']) if (s[id] !== undefined) $('#opt-' + id).checked = !!s[id];
+  }
+  function showReport(html) { customReport = html; openPreview(); }
+
+  window.__stockApp = { state, $, esc, fmt, colLetter, tick, afterEdit, reloadOriginal, on, emit, resetAll, clearStore,
+    restoreStore, getSettings, setSettings, showReport, runCompare: () => runCompare(true), dateStr, timeStr };
 
   init();
 })();

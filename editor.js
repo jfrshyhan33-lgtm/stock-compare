@@ -18,6 +18,7 @@
   let matches = [], curIdx = -1, curRow = -1, qToken = 0, qTimer = null, scope = 'all', searchSel = false;
 
   /* ---------- أدوات ---------- */
+  const touched = () => { try { App().emit('edit'); } catch (_) { /* لا بأس */ } };
   const rangeArr = (a, b) => { const o = []; for (let i = a; i <= b; i++) o.push(i); return o; };
   const hit = (a, b) => !(a.r2 < b.r1 || a.r1 > b.r2 || a.c2 < b.c1 || a.c1 > b.c2);
   const getCell = (r, c) => { const row = st.rows[r]; return row ? row[c] : undefined; };
@@ -393,6 +394,7 @@
     st.rows = s.rows; st.merges = s.merges; st.headerRow = s.headerRow; st.nameCol = s.nameCol; st.qtyCol = s.qtyCol;
     sel = null;
     afterStructure();
+    touched();
   }
   function doUndo() { const s = undoStack.pop(); if (!s) return; redoStack.push(snapshot()); msg = 'تم التراجع'; restore(s); }
   function doRedo() { const s = redoStack.pop(); if (!s) return; undoStack.push(snapshot()); msg = 'تمت الإعادة'; restore(s); }
@@ -404,6 +406,7 @@
     redoStack = [];
     msg = note || '';
     afterStructure();
+    touched();
   }
 
   function applyInput() {
@@ -422,6 +425,7 @@
     st.edited = true; redoStack = []; msg = 'تم تعديل ' + cellName(r, c);
     renderWindow(true);
     updateUI();
+    touched();
   }
 
   function remapMerges(axis, removedSorted) {
