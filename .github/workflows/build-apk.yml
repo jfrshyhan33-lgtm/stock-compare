@@ -1,0 +1,132 @@
+name: Build Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Unpack uploaded ZIP (if any)
+        run: |
+          ZIP=$(ls ./*.zip 2>/dev/null | head -n1 || true)
+          if [ -n "$ZIP" ]; then
+            echo "Found $ZIP"
+            rm -rf _unz && mkdir _unz
+            unzip -o "$ZIP" -d _unz
+            SRC=$(find _unz -name index.html -not -path '*/__MACOSX/*' -printf '%h\n' | head -n1)
+            cp -r "$SRC"/. .
+            rm -f build-apk.yml
+          else
+            echo "No ZIP found, using files already in the repository"
+          fi
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Copy web files
+        run: |
+          mkdir -p www
+          cp index.html app.js editor.js review.js projects.js style.css jszip.min.js xlsx.full.min.js manifest.webmanifest www/
+          cp icon-192.png icon-512.png icon-maskable-512.png apple-touch-icon.png www/
+
+      - name: Install Capacitor
+        run: |
+          npm init -y
+          npm install @capacitor/core@6 @capacitor/cli@6 @capacitor/android@6 @capacitor/filesystem@6 @capacitor/share@6
+
+      - name: Capacitor config
+        run: |
+          cat > capacitor.config.json <<'EOF'
+          {
+            "appId": "com.jafar.stockcompare",
+            "appName": "مقارنة المخزون",
+            "webDir": "www"
+          }
+          EOF
+
+      - name: Create Android project
+        run: npx cap add android
+
+      - name: Add PDF print support and app icon
+        run: |
+          cat > android/app/src/main/java/com/jafar/stockcompare/MainActivity.java <<'EOF'
+          package com.jafar.stockcompare;
+
+          import android.os.Bundle;
+          import android.print.PrintAttributes;
+          import android.print.PrintDocumentAdapter;
+          import android.print.PrintManager;
+          import android.webkit.JavascriptInterface;
+          import android.webkit.WebView;
+          import com.getcapacitor.BridgeActivity;
+
+          public class MainActivity extends BridgeActivity {
+            public class PrintBridge {
+              @JavascriptInterface
+              public void print(final String title) {
+                runOnUiThread(new Runnable() {
+                  @Override
+                  public void run() {
+                    WebView webView = getBridge().getWebView();
+                    PrintManager pm = (PrintManager) getSystemService(PRINT_SERVICE);
+                    String name = (title == null || title.isEmpty()) ? "report" : title;
+                    PrintDocumentAdapter adapter = webView.createPrintDocumentAdapter(name);
+                    pm.print(name, adapter, new PrintAttributes.Builder()
+                        .setMediaSize(PrintAttributes.MediaSize.ISO_A4).build());
+                  }
+                });
+              }
+            }
+
+            @Override
+            public void onCreate(Bundle savedInstanceState) {
+              super.onCreate(savedInstanceState);
+              getBridge().getWebView().addJavascriptInterface(new PrintBridge(), "AndroidPrint");
+            }
+          }
+          EOF
+          RES=android/app/src/main/res
+          rm -rf $RES/mipmap-anydpi-v26
+          for d in mdpi hdpi xhdpi xxhdpi xxxhdpi; do
+            cp icon-192.png $RES/mipmap-$d/ic_launcher.png
+            cp icon-192.png $RES/mipmap-$d/ic_launcher_round.png
+            rm -f $RES/mipmap-$d/ic_launcher_foreground.png
+          done
+
+      - name: Sync and build
+        run: |
+          npx cap sync android
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleDebug
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stock-compare-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Update the website files in the repository
+        run: |
+          ZIP=$(ls ./*.zip 2>/dev/null | head -n1 || true)
+          if [ -n "$ZIP" ]; then
+            git config user.name "github-actions"
+            git config user.email "actions@github.com"
+            git add index.html app.js editor.js review.js projects.js style.css sw.js manifest.webmanifest jszip.min.js xlsx.full.min.js icon-192.png icon-512.png icon-maskable-512.png apple-touch-icon.png
+            git rm -f "$ZIP"
+            git commit -m "Update from uploaded ZIP" || true
+            git push || true
+          fi
