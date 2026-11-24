@@ -217,21 +217,50 @@
     return { names: ['CSV'], getRows: async () => ({ rows, merges: [] }) };
   }
 
+  /* ---------- تحويل أي صيغة غير xlsx إلى xlsx (باستخدام SheetJS) ---------- */
+  const CONVERT_EXT = ['xls', 'xlsb', 'ods', 'fods', 'xml', 'html', 'htm', 'dif', 'slk', 'prn', 'xlt', 'xlam'];
+  function convertToXlsx(buf) {
+    if (typeof XLSX === 'undefined') throw new AppError('تعذّر تحميل مكتبة تحويل الصيغ. أعد فتح التطبيق.');
+    let wb;
+    try { wb = XLSX.read(buf, { type: 'array' }); }
+    catch (e) {
+      if (/password|encrypt/i.test(String(e && e.message || e)))
+        throw new AppError('الملف محمي بكلمة مرور. أزل الحماية في Excel ثم استورده.');
+      throw new AppError('تعذّر تحويل هذا الملف. تأكد أنه ملف Excel سليم.');
+    }
+    if (!wb.SheetNames || !wb.SheetNames.length) throw new AppError('لم يتم العثور على أوراق عمل داخل الملف.');
+    const out = XLSX.write(wb, { bookType: 'xlsx', type: 'array', bookSST: true });
+    return out instanceof ArrayBuffer ? out : out.buffer.slice(out.byteOffset, out.byteOffset + out.byteLength);
+  }
+  async function openConverted(buf) {
+    const conv = convertToXlsx(buf);
+    const wb = await openXlsx(conv);
+    wb.buf = conv;
+    return wb;
+  }
+
   async function openFromBuf(buf, fname) {
     if (!buf.byteLength) throw new AppError('الملف فارغ.');
     const h = new Uint8Array(buf, 0, Math.min(8, buf.byteLength));
-    if (h[0] === 0x50 && h[1] === 0x4B) return openXlsx(buf);               // ZIP => xlsx
-    if (h[0] === 0xD0 && h[1] === 0xCF && h[2] === 0x11 && h[3] === 0xE0)  // OLE => xls قديم أو محمي
-      throw new AppError('هذا الملف بصيغة xls القديمة أو محمي بكلمة مرور. افتحه في Excel واحفظه بصيغة xlsx (عادي) ثم استورده.');
     const ext = ((fname || '').split('.').pop() || '').toLowerCase();
+    if (h[0] === 0x50 && h[1] === 0x4B) {                                     // ZIP => xlsx أو xlsb أو ods
+      try { return await openXlsx(buf); }
+      catch (e) {
+        if (typeof XLSX === 'undefined') throw e;
+        return openConverted(buf);                                            // xlsb / ods ...
+      }
+    }
+    if (h[0] === 0xD0 && h[1] === 0xCF && h[2] === 0x11 && h[3] === 0xE0)     // OLE => xls قديم
+      return openConverted(buf);
     if (['csv', 'tsv', 'txt'].includes(ext)) return openCsv(buf);
-    throw new AppError('الملف غير صالح. اختر ملف Excel بصيغة xlsx.');
+    if (CONVERT_EXT.includes(ext)) return openConverted(buf);
+    throw new AppError('صيغة الملف غير مدعومة. المدعوم: xlsx, xls, xlsm, xlsb, ods, csv, tsv, txt, html.');
   }
 
   async function openWorkbook(file) {
     const buf = await file.arrayBuffer();
     const wb = await openFromBuf(buf, file.name);
-    wb.buf = buf;
+    if (!wb.buf) wb.buf = buf;
     return wb;
   }
 
@@ -295,7 +324,7 @@
       <section class="card" id="card-${d.key}">
         <div class="card-head"><span class="ordinal">${d.ordinal}</span><h2>${d.name}</h2></div>
         <input type="file" id="${d.key}-file" hidden
-               accept=".xlsx,.xlsm,.xls,.csv,.tsv,.txt,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv">
+               accept=".xlsx,.xlsm,.xlsb,.xls,.xlt,.ods,.fods,.csv,.tsv,.txt,.html,.htm,.xml,.dif,.slk,.prn,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.oasis.opendocument.spreadsheet,text/csv">
         <label class="btn primary big" for="${d.key}-file">📁 استيراد مخزن ${d.name}</label>
         <p class="status" id="${d.key}-status">لم يتم اختيار ملف بعد.</p>
         <button type="button" class="btn" id="${d.key}-edit" hidden>✏️ عرض وتعديل الملف (حذف وتحديد ودمج)</button>
@@ -329,7 +358,7 @@
   function hideCols(key) { $('#' + key + '-cols').hidden = true; $('#' + key + '-edit').hidden = true; }
 
   function errText(err) {
-    return err instanceof AppError ? err.message : 'تعذّرت قراءة الملف. تأكد أنه ملف Excel صالح بصيغة xlsx.';
+    return err instanceof AppError ? err.message : 'تعذّرت قراءة الملف. تأكد أنه ملف Excel أو CSV سليم.';
   }
 
   async function loadFile(key, file) {
@@ -708,7 +737,11 @@
     document.title = 'تقرير-مقارنة-المخزون-' + dateStr(customReport === null ? state.results.date : new Date());
     const restore = () => { document.title = old; window.removeEventListener('afterprint', restore); };
     window.addEventListener('afterprint', restore);
-    setTimeout(() => window.print(), 60);
+    setTimeout(() => {
+      // داخل تطبيق الأندرويد: نافذة طباعة النظام (فيها «حفظ كـ PDF»)
+      if (window.AndroidPrint && typeof window.AndroidPrint.print === 'function') window.AndroidPrint.print(document.title);
+      else window.print();
+    }, 60);
   }
 
   /* ---------- تشغيل ---------- */
@@ -742,7 +775,7 @@
     $('#rvPrint').addEventListener('click', exportPdf);
     document.addEventListener('keydown', e => { if (e.key === 'Escape' && !$('#reportView').hidden) closePreview(); });
 
-    if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol)) {
+    if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol) && !(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform())) {
       const hadController = !!navigator.serviceWorker.controller;
       let reloaded = false;
       navigator.serviceWorker.addEventListener('controllerchange', () => {

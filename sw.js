@@ -1,6 +1,6 @@
 /* عامل الخدمة: يحفظ ملفات التطبيق على الجهاز ليعمل بدون إنترنت.
    عند تعديل أي ملف في التطبيق غيّر رقم الإصدار أدناه (v1 ← v2). */
-const CACHE = 'stock-compare-v4';
+const CACHE = 'stock-compare-v5';
 const ASSETS = [
   './',
   'index.html',
@@ -10,6 +10,7 @@ const ASSETS = [
   'review.js',
   'projects.js',
   'jszip.min.js',
+  'xlsx.full.min.js',
   'manifest.webmanifest',
   'icon-192.png',
   'icon-512.png',

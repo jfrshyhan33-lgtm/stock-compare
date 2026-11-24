@@ -716,7 +716,25 @@
     return zip.generateAsync({ type: 'blob', compression: 'DEFLATE', mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
   }
 
-  function download(blob, name) {
+  async function download(blob, name) {
+    // داخل تطبيق الأندرويد: نحفظ الملف ثم نفتح نافذة المشاركة (حفظ في الملفات / واتساب ...)
+    const cap = window.Capacitor;
+    const P = cap && cap.isNativePlatform && cap.isNativePlatform() && cap.Plugins;
+    if (P && P.Filesystem && P.Share) {
+      try {
+        const b64 = await new Promise((res, rej) => {
+          const r = new FileReader();
+          r.onload = () => res(String(r.result).split(',')[1]);
+          r.onerror = () => rej(r.error);
+          r.readAsDataURL(blob);
+        });
+        const w = await P.Filesystem.writeFile({ path: name, data: b64, directory: 'CACHE' });
+        await P.Share.share({ title: name, url: w.uri, dialogTitle: 'حفظ أو مشاركة الملف' });
+        return;
+      } catch (err) {
+        if (/cancel/i.test(String(err && err.message || err))) return;   // المستخدم أغلق النافذة
+      }
+    }
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url; a.download = name;
